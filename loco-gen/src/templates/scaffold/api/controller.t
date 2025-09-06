@@ -64,7 +64,7 @@ pub async fn add(State(ctx): State<AppContext>, Json(params): Json<Params>) -> i
     params.update(&mut item);
     match item.insert(&ctx.db).await {
         Ok(obj) => (StatusCode::CREATED, format::json(obj)),
-        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
+        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::text(&err))
     }
 }
 
@@ -74,30 +74,33 @@ pub async fn update(
     State(ctx): State<AppContext>,
     Json(params): Json<Params>,
 ) -> Result<Response> {
-    let item = load_item(&ctx, id).await?;
-    let mut item = item.into_active_model();
-    params.update(&mut item);
-    match item.update(&ctx.db).await {
-        Ok(obj) => (StatusCode::OK, format::json(obj)),
-        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
+    if let item = load_item(&ctx, id).await {
+        let mut item = item.into_active_model();
+        params.update(&mut item);
+        match item.update(&ctx.db).await {
+            Ok(obj) => (StatusCode::OK, format::json(obj)),
+            Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::text(&err))
+        }
     }
+    (StatusCode::NOT_FOUND, format::text("not found!"))
 }
 
 #[debug_handler]
 pub async fn remove(Path(id): Path<i32>, State(ctx): State<AppContext>) -> impl IntoResponse {
-    let item = load_item(&ctx, id).await.unwrap();
-
-    match item.delete(&ctx.db).await {
-        Ok(_) => (StatusCode::NO_CONTENT, format::empty()),
-        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
+    if let item = load_item(&ctx, id).await {
+        match item.delete(&ctx.db).await {
+            Ok(_) => (StatusCode::NO_CONTENT, format::empty()),
+            Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::text(&err))
+        }
     }
+    (StatusCode::NOT_FOUND, format::text("not found!"))
 }
 
 #[debug_handler]
 pub async fn get_one(Path(id): Path<i32>, State(ctx): State<AppContext>) -> impl IntoResponse {
     match load_item(&ctx, id).await {
         Ok(obj) => (StatusCode::Ok, format::json(obj)),
-        Err(err) => (StatusCode::NOT_FOUND, format::json(err))
+        Err(err) => (StatusCode::NOT_FOUND, format::text(&err))
     }
 }
 
