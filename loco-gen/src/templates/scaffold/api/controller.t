@@ -57,13 +57,15 @@ pub async fn list(State(ctx): State<AppContext>) -> Result<Response> {
 }
 
 #[debug_handler]
-pub async fn add(State(ctx): State<AppContext>, Json(params): Json<Params>) -> Result<Response> {
+pub async fn add(State(ctx): State<AppContext>, Json(params): Json<Params>) -> impl IntoResponse {
     let mut item = ActiveModel {
         ..Default::default()
     };
     params.update(&mut item);
-    let item = item.insert(&ctx.db).await?;
-    format::json(item)
+    match item.insert(&ctx.db).await {
+        Ok(obj) => (StatusCode::CREATED, format::json(obj)),
+        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
+    }
 }
 
 #[debug_handler]
@@ -75,19 +77,30 @@ pub async fn update(
     let item = load_item(&ctx, id).await?;
     let mut item = item.into_active_model();
     params.update(&mut item);
-    let item = item.update(&ctx.db).await?;
-    format::json(item)
+    match item.update(&ctx.db).await {
+        Ok(obj) => (StatusCode::OK, format::json(obj)),
+        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
+    }
 }
 
 #[debug_handler]
-pub async fn remove(Path(id): Path<i32>, State(ctx): State<AppContext>) -> Result<Response> {
-    load_item(&ctx, id).await?.delete(&ctx.db).await?;
-    format::empty()
+pub async fn remove(Path(id): Path<i32>, State(ctx): State<AppContext>) -> impl IntoResponse {
+    let item = load_item(&ctx, id).await.unwrap();
+
+    match item.delete(&ctx.db).await {
+        Ok(obj) => (StatusCode::NO_CONTENT, format::empty()),
+        Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
+    }
 }
 
 #[debug_handler]
 pub async fn get_one(Path(id): Path<i32>, State(ctx): State<AppContext>) -> Result<Response> {
     format::json(load_item(&ctx, id).await?)
+
+    match load_item(&ctx, id).await {
+        Ok(obj) => (StatusCode::Ok, format::json(obj)),
+        Err(err) => (StatusCode::NOT_FOUND, format::json(err))
+    }
 }
 
 pub fn routes() -> Routes {
