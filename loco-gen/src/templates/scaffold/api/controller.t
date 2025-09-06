@@ -88,15 +88,13 @@ pub async fn remove(Path(id): Path<i32>, State(ctx): State<AppContext>) -> impl 
     let item = load_item(&ctx, id).await.unwrap();
 
     match item.delete(&ctx.db).await {
-        Ok(obj) => (StatusCode::NO_CONTENT, format::empty()),
+        Ok(_) => (StatusCode::NO_CONTENT, format::empty()),
         Err(err) => (StatusCode::UNPROCESSABLE_ENTITY, format::json(err))
     }
 }
 
 #[debug_handler]
-pub async fn get_one(Path(id): Path<i32>, State(ctx): State<AppContext>) -> Result<Response> {
-    format::json(load_item(&ctx, id).await?)
-
+pub async fn get_one(Path(id): Path<i32>, State(ctx): State<AppContext>) -> impl IntoResponse {
     match load_item(&ctx, id).await {
         Ok(obj) => (StatusCode::Ok, format::json(obj)),
         Err(err) => (StatusCode::NOT_FOUND, format::json(err))
