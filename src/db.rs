@@ -463,7 +463,7 @@ struct EntityCmd {
 }
 
 impl EntityCmd {
-    fn new(config: &config::Database, enum_extra_derives: Option<String>) -> Self {
+    fn new(config: &config::Database, model_extra_derives: Option<String>) -> Self {
         let mut flags = BTreeMap::from([
             ("--database-url".to_string(), Some(config.uri.clone())),
             (
@@ -478,8 +478,8 @@ impl EntityCmd {
             ("--with-copy-enums".to_string(), None),
         ]);
 
-        if let Some(derives) = enum_extra_derives {
-            flags.insert("--enum-extra-derives".to_string(), Some(derives));
+        if let Some(derives) = model_extra_derives {
+            flags.insert("--model-extra-derives".to_string(), Some(derives));
         }
 
         Self {
@@ -491,9 +491,9 @@ impl EntityCmd {
     fn merge_with_config(
         config: &config::Database,
         toml_config: &toml::Table,
-        enum_extra_derives: Option<String>,
+        model_extra_derives: Option<String>,
     ) -> Self {
-        let mut flags = Self::new(config, enum_extra_derives).flags;
+        let mut flags = Self::new(config, model_extra_derives).flags;
 
         for (key, value) in toml_config {
             let flag_key = format!("--{}", key.replace('_', "-"));
@@ -560,7 +560,7 @@ impl EntityCmd {
 /// Returns a [`AppResult`] if an error occurs during generate model entity.
 pub async fn entities<M: MigratorTrait>(
     ctx: &AppContext,
-    enum_extra_derives: Option<String>,
+    model_extra_derives: Option<String>,
 ) -> AppResult<String> {
     doctor::check_seaorm_cli()?.to_result()?;
     doctor::check_db(&ctx.config.database).await.to_result()?;
@@ -568,13 +568,17 @@ pub async fn entities<M: MigratorTrait>(
     let flags = CargoConfig::from_current_dir()?
         .get_db_entities()
         .map_or_else(
-            || EntityCmd::new(&ctx.config.database, enum_extra_derives.clone()),
+            || EntityCmd::new(&ctx.config.database, model_extra_derives.clone()),
             |entity_config| {
                 tracing::info!(
                     ?entity_config,
                     "Found db.entity configuration in Cargo.toml"
                 );
-                EntityCmd::merge_with_config(&ctx.config.database, entity_config, enum_extra_derives.clone())
+                EntityCmd::merge_with_config(
+                    &ctx.config.database,
+                    entity_config,
+                    model_extra_derives.clone(),
+                )
             },
         );
 

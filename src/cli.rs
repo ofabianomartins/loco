@@ -494,9 +494,9 @@ enum DbCommands {
     /// Generate entity .rs files from database schema
     #[cfg(debug_assertions)]
     Entities {
-        /// Add extra derive macros to generated enums (comma separated), e.g. `--enum-extra-derives 'ts_rs::Ts','CustomDerive'`
+        /// Add extra derive macros to generated model struct (comma separated), e.g. `--model-extra-derives 'ts_rs::Ts','CustomDerive'`
         #[arg(long)]
-        enum_extra_derives: Option<String>,
+        model_extra_derives: Option<String>,
     },
     /// Truncate data in tables (without dropping)
     Truncate,
@@ -528,8 +528,8 @@ impl From<DbCommands> for RunDbCommand {
             DbCommands::Reset => Self::Reset,
             DbCommands::Status => Self::Status,
             #[cfg(debug_assertions)]
-            DbCommands::Entities { enum_extra_derives } => Self::Entities {
-                enum_extra_derives,
+            DbCommands::Entities { model_extra_derives } => Self::Entities {
+                model_extra_derives,
             },
             DbCommands::Truncate => Self::Truncate,
             DbCommands::Seed {

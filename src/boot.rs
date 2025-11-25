@@ -279,7 +279,7 @@ pub enum RunDbCommand {
     Status,
     /// Generate entity.
     Entities {
-        enum_extra_derives: Option<String>,
+        model_extra_derives: Option<String>,
     },
     /// Truncate tables, by executing the implementation in [`Hooks::seed`]
     /// (without dropping).
@@ -324,12 +324,12 @@ pub async fn run_db<H: Hooks, M: MigratorTrait>(
             tracing::warn!("status:");
             db::status::<M>(&app_context.db).await?;
         }
-        RunDbCommand::Entities { enum_extra_derives } => {
+        RunDbCommand::Entities { model_extra_derives } => {
             tracing::warn!("entities:");
 
             tracing::warn!(
                 "{}",
-                db::entities::<M>(app_context, enum_extra_derives).await?
+                db::entities::<M>(app_context, model_extra_derives).await?
             );
         }
         RunDbCommand::Truncate => {
