@@ -463,27 +463,37 @@ struct EntityCmd {
 }
 
 impl EntityCmd {
-    fn new(config: &config::Database) -> Self {
+    fn new(config: &config::Database, enum_extra_derives: Option<String>) -> Self {
+        let mut flags = BTreeMap::from([
+            ("--database-url".to_string(), Some(config.uri.clone())),
+            (
+                "--ignore-tables".to_string(),
+                Some(IGNORED_TABLES.join(",")),
+            ),
+            (
+                "--output-dir".to_string(),
+                Some("src/models/_entities".to_string()),
+            ),
+            ("--with-serde".to_string(), Some("both".to_string())),
+            ("--with-copy-enums".to_string(), None),
+        ]);
+
+        if let Some(derives) = enum_extra_derives {
+            flags.insert("--enum-extra-derives".to_string(), Some(derives));
+        }
+
         Self {
             command: vec!["generate".to_string(), "entity".to_string()],
-            flags: BTreeMap::from([
-                ("--database-url".to_string(), Some(config.uri.clone())),
-                (
-                    "--ignore-tables".to_string(),
-                    Some(IGNORED_TABLES.join(",")),
-                ),
-                (
-                    "--output-dir".to_string(),
-                    Some("src/models/_entities".to_string()),
-                ),
-                ("--with-serde".to_string(), Some("both".to_string())),
-                ("--with-copy-enums".to_string(), None),
-            ]),
+            flags,
         }
     }
 
-    fn merge_with_config(config: &config::Database, toml_config: &toml::Table) -> Self {
-        let mut flags = Self::new(config).flags;
+    fn merge_with_config(
+        config: &config::Database,
+        toml_config: &toml::Table,
+        enum_extra_derives: Option<String>,
+    ) -> Self {
+        let mut flags = Self::new(config, enum_extra_derives).flags;
 
         for (key, value) in toml_config {
             let flag_key = format!("--{}", key.replace('_', "-"));
@@ -548,20 +558,23 @@ impl EntityCmd {
 /// # Errors
 ///
 /// Returns a [`AppResult`] if an error occurs during generate model entity.
-pub async fn entities<M: MigratorTrait>(ctx: &AppContext) -> AppResult<String> {
+pub async fn entities<M: MigratorTrait>(
+    ctx: &AppContext,
+    enum_extra_derives: Option<String>,
+) -> AppResult<String> {
     doctor::check_seaorm_cli()?.to_result()?;
     doctor::check_db(&ctx.config.database).await.to_result()?;
 
     let flags = CargoConfig::from_current_dir()?
         .get_db_entities()
         .map_or_else(
-            || EntityCmd::new(&ctx.config.database),
+            || EntityCmd::new(&ctx.config.database, enum_extra_derives.clone()),
             |entity_config| {
                 tracing::info!(
                     ?entity_config,
                     "Found db.entity configuration in Cargo.toml"
                 );
-                EntityCmd::merge_with_config(&ctx.config.database, entity_config)
+                EntityCmd::merge_with_config(&ctx.config.database, entity_config, enum_extra_derives.clone())
             },
         );
 
