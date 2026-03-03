@@ -5,7 +5,7 @@ use include_dir::{include_dir, Dir, DirEntry, File};
 use crate::{Error, Result};
 
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
-pub const DEFAULT_LOCAL_TEMPLATE: &str = ".loco-templates";
+pub const DEFAULT_LOCAL_TEMPLATE: &str = "templates";
 
 /// Returns a list of paths that should be ignored during file collection.
 #[must_use]
@@ -33,6 +33,17 @@ fn is_path_ignored(path: &Path, ignored_paths: &[&Path]) -> bool {
     ignored_paths
         .iter()
         .any(|&ignored| path.starts_with(ignored))
+}
+
+/// Returns the names of top-level built-in generator directories (excluding ignored paths).
+#[must_use]
+pub fn list_top_level_dirs() -> Vec<&'static str> {
+    let ignored = get_ignored_paths();
+    TEMPLATES
+        .dirs()
+        .filter(|d| !is_path_ignored(d.path(), &ignored))
+        .filter_map(|d| d.path().to_str())
+        .collect()
 }
 
 /// Collects all file paths from the included templates directory recursively.
@@ -148,6 +159,25 @@ pub mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn test_list_top_level_dirs_not_empty() {
+        let dirs = list_top_level_dirs();
+        assert!(!dirs.is_empty());
+    }
+
+    #[test]
+    fn test_list_top_level_dirs_excludes_ignored() {
+        let dirs = list_top_level_dirs();
+        let ignored = get_ignored_paths();
+        for dir in &dirs {
+            let path = Path::new(dir);
+            assert!(
+                !is_path_ignored(path, &ignored),
+                "dir `{dir}` should not be in ignored list"
+            );
+        }
     }
 
     #[test]

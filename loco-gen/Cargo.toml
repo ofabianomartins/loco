@@ -28,6 +28,7 @@ tera = { workspace = true }
 duct = { workspace = true }
 clap = { version = "4.4.7", features = ["derive"] }
 include_dir = { version = "0.7.4" }
+toml = "0.8"
 
 [dev-dependencies]
 tree-fs = { version = "0.3" }

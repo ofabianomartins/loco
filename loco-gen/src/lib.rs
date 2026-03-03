@@ -6,6 +6,7 @@ pub use rrgen::{GenResult, RRgen};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 mod controller;
+mod custom;
 use colored::Colorize;
 use std::fmt::Write;
 use std::{
@@ -301,10 +302,63 @@ pub enum Component {
     Deployment {
         kind: DeploymentKind,
     },
+    Custom {
+        /// Name of the custom generator to invoke
+        generator_name: String,
+
+        /// Name of the entity to generate
+        name: String,
+
+        /// Fields, eg. title:string hits:int
+        fields: Vec<(String, String)>,
+    },
 }
 
 pub struct AppInfo {
     pub app_name: String,
+}
+
+/// Indicates whether a generator is built-in or defined by the project.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GeneratorSource {
+    BuiltIn,
+    Custom,
+}
+
+/// Metadata about an available generator.
+#[derive(Debug)]
+pub struct GeneratorInfo {
+    pub name: String,
+    pub description: String,
+    pub source: GeneratorSource,
+}
+
+/// Returns all available generators: built-in first, then custom from
+/// `templates/generators/` in the given base directory.
+///
+/// # Errors
+///
+/// Returns an error if custom generator discovery fails.
+pub fn list_generators(base_path: &Path) -> Result<Vec<GeneratorInfo>> {
+    let mut generators: Vec<GeneratorInfo> = template::list_top_level_dirs()
+        .into_iter()
+        .map(|name| GeneratorInfo {
+            name: name.to_string(),
+            description: String::new(),
+            source: GeneratorSource::BuiltIn,
+        })
+        .collect();
+
+    let generators_path = base_path.join(custom::CUSTOM_GENERATORS_PATH);
+    for gen in custom::discover(&generators_path)? {
+        generators.push(GeneratorInfo {
+            name: gen.manifest.name,
+            description: gen.manifest.description,
+            source: GeneratorSource::Custom,
+        });
+    }
+
+    Ok(generators)
 }
 
 #[must_use]
@@ -392,9 +446,49 @@ pub fn generate(rrgen: &RRgen, component: Component, appinfo: &AppInfo) -> Resul
             let vars = json!({ "name": name });
             render_template(rrgen, Path::new("data"), &vars)?
         }
+        Component::Custom {
+            generator_name,
+            name,
+            fields,
+        } => {
+            let generators_path = Path::new(custom::CUSTOM_GENERATORS_PATH);
+            let generator = custom::find(generators_path, &generator_name)?;
+            let vars = json!({
+                "name": name,
+                "pkg_name": appinfo.app_name,
+                "fields": fields,
+            });
+            generate_custom(rrgen, &generator, &vars)?
+        }
     };
 
     Ok(get_result)
+}
+
+fn generate_custom(
+    rrgen: &RRgen,
+    generator: &custom::CustomGenerator,
+    vars: &Value,
+) -> Result<GenerateResults> {
+    let mut gen_result = vec![];
+    let mut local_templates = vec![];
+
+    for file in &generator.manifest.files {
+        let template_path = generator.path.join(&file.template);
+        let content = fs::read_to_string(&template_path).map_err(|_| {
+            Error::Message(format!(
+                "template file `{}` not found in generator `{}`",
+                file.template, generator.manifest.name
+            ))
+        })?;
+        gen_result.push(rrgen.generate(&content, vars)?);
+        local_templates.push(template_path);
+    }
+
+    Ok(GenerateResults {
+        rrgen: gen_result,
+        local_templates,
+    })
 }
 
 fn render_template(rrgen: &RRgen, template: &Path, vars: &Value) -> Result<GenerateResults> {
@@ -518,6 +612,110 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn test_list_generators_returns_builtins() {
+        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
+        let result = list_generators(tmp.root.as_path()).unwrap();
+        let builtin: Vec<_> = result
+            .iter()
+            .filter(|g| g.source == GeneratorSource::BuiltIn)
+            .collect();
+        assert!(!builtin.is_empty(), "should have at least one built-in generator");
+    }
+
+    #[test]
+    fn test_list_generators_includes_custom() {
+        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
+        let gen_dir = tmp
+            .root
+            .join(custom::CUSTOM_GENERATORS_PATH)
+            .join("my-gen");
+        fs::create_dir_all(&gen_dir).unwrap();
+        fs::write(
+            gen_dir.join("generator.toml"),
+            "name = \"my-gen\"\ndescription = \"Custom gen\"\n[[files]]\ntemplate = \"my.t\"\n",
+        )
+        .unwrap();
+
+        let result = list_generators(tmp.root.as_path()).unwrap();
+        let custom: Vec<_> = result
+            .iter()
+            .filter(|g| g.source == GeneratorSource::Custom)
+            .collect();
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].name, "my-gen");
+        assert_eq!(custom[0].description, "Custom gen");
+    }
+
+    #[test]
+    fn test_list_generators_no_custom_when_dir_absent() {
+        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
+        let result = list_generators(tmp.root.as_path()).unwrap();
+        let custom: Vec<_> = result
+            .iter()
+            .filter(|g| g.source == GeneratorSource::Custom)
+            .collect();
+        assert!(custom.is_empty());
+    }
+
+    #[test]
+    fn test_generate_custom_renders_template() {
+        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
+        let gen_dir = tmp.root.join("my-gen");
+        fs::create_dir_all(&gen_dir).unwrap();
+
+        // rrgen format: YAML header + "---" + Tera body
+        let template_content =
+            "to: \"src/{{ name | snake_case }}.rs\"\n---\n// generated: {{ name }}\n";
+        fs::write(gen_dir.join("file.t"), template_content).unwrap();
+
+        let manifest = custom::CustomGeneratorManifest {
+            name: "my-gen".to_string(),
+            description: "Test generator".to_string(),
+            files: vec![custom::CustomGeneratorFile {
+                template: "file.t".to_string(),
+            }],
+        };
+        let generator = custom::CustomGenerator {
+            manifest,
+            path: gen_dir,
+        };
+
+        let rrgen = new_generator();
+        let vars = serde_json::json!({"name": "MyEntity"});
+        let result = generate_custom(&rrgen, &generator, &vars).unwrap();
+        assert_eq!(result.local_templates.len(), 1);
+        assert_eq!(result.rrgen.len(), 1);
+    }
+
+    #[test]
+    fn test_generate_custom_missing_template_file_returns_error() {
+        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
+        let gen_dir = tmp.root.join("my-gen");
+        fs::create_dir_all(&gen_dir).unwrap();
+
+        let manifest = custom::CustomGeneratorManifest {
+            name: "my-gen".to_string(),
+            description: "Test generator".to_string(),
+            files: vec![custom::CustomGeneratorFile {
+                template: "missing.t".to_string(),
+            }],
+        };
+        let generator = custom::CustomGenerator {
+            manifest,
+            path: gen_dir,
+        };
+
+        let rrgen = new_generator();
+        let vars = serde_json::json!({"name": "Test"});
+        let result = generate_custom(&rrgen, &generator, &vars);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("template file `missing.t` not found"));
+    }
 
     #[test]
     fn test_template_not_found() {
