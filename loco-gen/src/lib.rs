@@ -6,7 +6,7 @@ pub use rrgen::{GenResult, RRgen};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 mod controller;
-mod custom;
+pub mod custom;
 use colored::Colorize;
 use std::fmt::Write;
 use std::{
@@ -26,13 +26,23 @@ mod model;
 mod scaffold;
 pub mod template;
 pub mod tera_ext;
-#[cfg(test)]
-mod testutil;
 
 #[derive(Debug)]
 pub struct GenerateResults {
     rrgen: Vec<rrgen::GenResult>,
     local_templates: Vec<PathBuf>,
+}
+
+impl GenerateResults {
+    #[must_use]
+    pub fn rrgen_count(&self) -> usize {
+        self.rrgen.len()
+    }
+
+    #[must_use]
+    pub fn local_templates_count(&self) -> usize {
+        self.local_templates.len()
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -465,7 +475,13 @@ pub fn generate(rrgen: &RRgen, component: Component, appinfo: &AppInfo) -> Resul
     Ok(get_result)
 }
 
-fn generate_custom(
+/// Renders all template files defined in a custom generator.
+///
+/// # Errors
+///
+/// Returns an error if a template file listed in the manifest cannot be read
+/// or if Tera rendering fails.
+pub fn generate_custom(
     rrgen: &RRgen,
     generator: &custom::CustomGenerator,
     vars: &Value,
@@ -605,332 +621,4 @@ pub fn copy_template(path: &Path, to: &Path) -> Result<Vec<PathBuf>> {
         copied_files.push(copy_to);
     }
     Ok(copied_files)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::*;
-
-    #[test]
-    fn test_list_generators_returns_builtins() {
-        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
-        let result = list_generators(tmp.root.as_path()).unwrap();
-        let builtin: Vec<_> = result
-            .iter()
-            .filter(|g| g.source == GeneratorSource::BuiltIn)
-            .collect();
-        assert!(!builtin.is_empty(), "should have at least one built-in generator");
-    }
-
-    #[test]
-    fn test_list_generators_includes_custom() {
-        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
-        let gen_dir = tmp
-            .root
-            .join(custom::CUSTOM_GENERATORS_PATH)
-            .join("my-gen");
-        fs::create_dir_all(&gen_dir).unwrap();
-        fs::write(
-            gen_dir.join("generator.toml"),
-            "name = \"my-gen\"\ndescription = \"Custom gen\"\n[[files]]\ntemplate = \"my.t\"\n",
-        )
-        .unwrap();
-
-        let result = list_generators(tmp.root.as_path()).unwrap();
-        let custom: Vec<_> = result
-            .iter()
-            .filter(|g| g.source == GeneratorSource::Custom)
-            .collect();
-        assert_eq!(custom.len(), 1);
-        assert_eq!(custom[0].name, "my-gen");
-        assert_eq!(custom[0].description, "Custom gen");
-    }
-
-    #[test]
-    fn test_list_generators_no_custom_when_dir_absent() {
-        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
-        let result = list_generators(tmp.root.as_path()).unwrap();
-        let custom: Vec<_> = result
-            .iter()
-            .filter(|g| g.source == GeneratorSource::Custom)
-            .collect();
-        assert!(custom.is_empty());
-    }
-
-    #[test]
-    fn test_generate_custom_renders_template() {
-        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
-        let gen_dir = tmp.root.join("my-gen");
-        fs::create_dir_all(&gen_dir).unwrap();
-
-        // rrgen format: YAML header + "---" + Tera body
-        let template_content =
-            "to: \"src/{{ name | snake_case }}.rs\"\n---\n// generated: {{ name }}\n";
-        fs::write(gen_dir.join("file.t"), template_content).unwrap();
-
-        let manifest = custom::CustomGeneratorManifest {
-            name: "my-gen".to_string(),
-            description: "Test generator".to_string(),
-            files: vec![custom::CustomGeneratorFile {
-                template: "file.t".to_string(),
-            }],
-        };
-        let generator = custom::CustomGenerator {
-            manifest,
-            path: gen_dir,
-        };
-
-        let rrgen = new_generator();
-        let vars = serde_json::json!({"name": "MyEntity"});
-        let result = generate_custom(&rrgen, &generator, &vars).unwrap();
-        assert_eq!(result.local_templates.len(), 1);
-        assert_eq!(result.rrgen.len(), 1);
-    }
-
-    #[test]
-    fn test_generate_custom_missing_template_file_returns_error() {
-        let tmp = tree_fs::TreeBuilder::default().drop(true).create().unwrap();
-        let gen_dir = tmp.root.join("my-gen");
-        fs::create_dir_all(&gen_dir).unwrap();
-
-        let manifest = custom::CustomGeneratorManifest {
-            name: "my-gen".to_string(),
-            description: "Test generator".to_string(),
-            files: vec![custom::CustomGeneratorFile {
-                template: "missing.t".to_string(),
-            }],
-        };
-        let generator = custom::CustomGenerator {
-            manifest,
-            path: gen_dir,
-        };
-
-        let rrgen = new_generator();
-        let vars = serde_json::json!({"name": "Test"});
-        let result = generate_custom(&rrgen, &generator, &vars);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("template file `missing.t` not found"));
-    }
-
-    #[test]
-    fn test_template_not_found() {
-        let tree_fs = tree_fs::TreeBuilder::default()
-            .drop(true)
-            .create()
-            .expect("create temp file");
-        let path = Path::new("nonexistent-template");
-
-        let result = copy_template(path, tree_fs.root.as_path());
-        assert!(result.is_err());
-        if let Err(Error::TemplateNotFound { path: p }) = result {
-            assert_eq!(p, path.to_path_buf());
-        } else {
-            panic!("Expected TemplateNotFound error");
-        }
-    }
-
-    #[test]
-    fn test_copy_template_valid_folder_template() {
-        let temp_fs = tree_fs::TreeBuilder::default()
-            .drop(true)
-            .create()
-            .expect("Failed to create temporary file system");
-
-        let template_dir = template::tests::find_first_dir();
-
-        let copy_result = copy_template(template_dir.path(), temp_fs.root.as_path());
-        assert!(
-            copy_result.is_ok(),
-            "Failed to copy template from directory {:?}",
-            template_dir.path()
-        );
-
-        let template_files = template::collect_files_from_path(template_dir.path())
-            .expect("Failed to collect files from the template directory");
-
-        assert!(
-            !template_files.is_empty(),
-            "No files found in the template directory"
-        );
-
-        for template_file in template_files {
-            let copy_file_path = temp_fs.root.join(template_file.path());
-
-            assert!(
-                copy_file_path.exists(),
-                "Copy file does not exist: {copy_file_path:?}"
-            );
-
-            let copy_content =
-                fs::read_to_string(&copy_file_path).expect("Failed to read coped file content");
-
-            assert_eq!(
-                template_file
-                    .contents_utf8()
-                    .expect("Failed to get template file content"),
-                copy_content,
-                "Content mismatch in file: {copy_file_path:?}"
-            );
-        }
-    }
-
-    fn test_mapping() -> Mappings {
-        Mappings {
-            field_types: vec![
-                FieldType {
-                    name: "array".to_string(),
-                    rust: RustType::Map(HashMap::from([
-                        ("string".to_string(), "Vec<String>".to_string()),
-                        ("chat".to_string(), "Vec<String>".to_string()),
-                        ("int".to_string(), "Vec<i32>".to_string()),
-                    ])),
-                    schema: "array".to_string(),
-                    col_type: "array_null".to_string(),
-                    arity: 1,
-                },
-                FieldType {
-                    name: "string^".to_string(),
-                    rust: RustType::String("String".to_string()),
-                    schema: "string_uniq".to_string(),
-                    col_type: "StringUniq".to_string(),
-                    arity: 0,
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn can_get_all_names_from_mapping() {
-        let mapping = test_mapping();
-        assert_eq!(
-            mapping.all_names(),
-            Vec::from([&"array".to_string(), &"string^".to_string()])
-        );
-    }
-
-    #[test]
-    fn can_get_col_type_arity_from_mapping() {
-        let mapping = test_mapping();
-
-        assert_eq!(mapping.col_type_arity("array").expect("Get array arity"), 1);
-        assert_eq!(
-            mapping
-                .col_type_arity("string^")
-                .expect("Get string^ arity"),
-            0
-        );
-
-        assert!(mapping.col_type_arity("unknown").is_err());
-    }
-
-    #[test]
-    fn can_get_col_type_field_from_mapping() {
-        let mapping = test_mapping();
-
-        assert_eq!(
-            mapping.col_type_field("array").expect("Get array field"),
-            "array_null"
-        );
-
-        assert!(mapping.col_type_field("unknown").is_err());
-    }
-
-    #[test]
-    fn can_get_schema_field_from_mapping() {
-        let mapping = test_mapping();
-
-        assert_eq!(
-            mapping.schema_field("string^").expect("Get string^ schema"),
-            "string_uniq"
-        );
-
-        assert!(mapping.schema_field("unknown").is_err());
-    }
-
-    #[test]
-    fn can_get_rust_field_from_mapping() {
-        let mapping = test_mapping();
-
-        assert_eq!(
-            mapping
-                .rust_field("string^")
-                .expect("Get string^ rust field"),
-            "String"
-        );
-
-        assert!(mapping.rust_field("array").is_err());
-
-        assert!(mapping.rust_field("unknown").is_err(),);
-    }
-
-    #[test]
-    fn can_get_rust_field_kind_from_mapping() {
-        let mapping = test_mapping();
-
-        assert!(mapping.rust_field_kind("string^").is_ok());
-
-        assert!(mapping.rust_field_kind("unknown").is_err(),);
-    }
-
-    #[test]
-    fn can_get_rust_field_with_params_from_mapping() {
-        let mapping = test_mapping();
-
-        assert_eq!(
-            mapping
-                .rust_field_with_params("string^", &vec!["string".to_string()])
-                .expect("Get string^ rust field"),
-            "String"
-        );
-
-        assert_eq!(
-            mapping
-                .rust_field_with_params("array", &vec!["string".to_string()])
-                .expect("Get string^ rust field"),
-            "Vec<String>"
-        );
-        assert!(mapping
-            .rust_field_with_params("array", &vec!["unknown".to_string()])
-            .is_err());
-
-        assert!(mapping.rust_field_with_params("unknown", &vec![]).is_err());
-    }
-
-    #[test]
-    fn can_collect_messages() {
-        let gen_result = GenerateResults {
-            rrgen: vec![
-                GenResult::Skipped,
-                GenResult::Generated {
-                    message: Some("test".to_string()),
-                },
-                GenResult::Generated {
-                    message: Some("test2".to_string()),
-                },
-                GenResult::Generated { message: None },
-            ],
-            local_templates: vec![
-                PathBuf::from("template").join("scheduler.t"),
-                PathBuf::from("template").join("task.t"),
-            ],
-        };
-
-        let re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
-
-        assert_eq!(
-            re.replace_all(&collect_messages(&gen_result), ""),
-            r"* test
-* test2
-
-The following templates were sourced from the local templates:
-* template/scheduler.t
-* template/task.t
-"
-        );
-    }
 }
